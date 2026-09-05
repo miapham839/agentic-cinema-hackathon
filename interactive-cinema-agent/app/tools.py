@@ -22,9 +22,6 @@ Read/write split (see docs/DESIGN_DECISIONS.md for the full rationale):
     `clickhouse_connect`, defined below. Only parser_agent uses these. This avoids
     turning on mcp-clickhouse's CLICKHOUSE_ALLOW_WRITE_ACCESS flag, which would grant
     every agent holding that toolset arbitrary DDL/DML via run_query.
-
-Writes follow a stage -> check -> commit lifecycle (see that section below for
-why), with the deterministic pre-write rules living in app/checks.py.
 """
 
 import os
@@ -34,19 +31,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from mcp import StdioServerParameters
 
-from app.checks import (
-    MUST_ASK,
-    check_budget_extraction,
-    check_script_extraction,
-    run_all_checks,
-)
-from app.schemas import (
-    BudgetExtraction,
-    Correction,
-    ProductionConstraints,
-    ScriptEdge,
-    ScriptExtraction,
-)
+from app.schemas import BudgetExtraction, ProductionConstraints, ScriptExtraction
 
 # ==============================================================================
 # CLICKHOUSE CONNECTION CONFIG (shared by read + write paths)
@@ -128,367 +113,175 @@ def _get_clickhouse_write_client():
     return _write_client
 
 
-# ==============================================================================
-# STAGE -> CHECK -> COMMIT LIFECYCLE — parser_agent only
-# ==============================================================================
-# parser_agent used to call three fire-and-forget insert_* tools directly. That
-# had two problems seen in testing:
-#
-#   1. Nothing structurally prevented a partial write. In one run only
-#      insert_script_extraction fired; the budget and constraints writes were
-#      silently skipped, leaving the three tables inconsistent.
-#   2. Resolving a HITL answer meant re-sending an entire corrected extraction,
-#      so every large draft got serialized twice — the payload pattern already
-#      implicated in a MALFORMED_FUNCTION_CALL failure.
-#
-# The lifecycle fixes both: drafts are staged once, deterministic checks run
-# over them in code (app/checks.py), the model asks the user about whatever the
-# checks found, and a single commit applies small correction records and writes
-# every table together.
-#
-# NOTE ON STATE KEYS: these are deliberately NOT "temp:" prefixed. ADK strips
-# temp-scoped keys from the persisted event delta (_trim_temp_delta_state in
-# sessions/base_session_service.py) — they survive only in the in-memory
-# session object. request_input pauses the invocation across a request
-# boundary, and this project swaps in VertexAiSessionService when
-# GOOGLE_CLOUD_AGENT_ENGINE_ID is set (see app/app_utils/services.py), so
-# temp-scoped drafts would silently vanish on resume. commit_staged clears
-# these explicitly instead.
+def insert_script_extraction(extraction: ScriptExtraction, tool_context: ToolContext) -> dict:
+    """Writes a structured script extraction (nodes + edges) to ClickHouse.
 
-STAGED_SCRIPT_KEY = "staged_script"
-STAGED_BUDGET_KEY = "staged_budget"
-STAGED_CONSTRAINTS_KEY = "staged_constraints"
-CHECKS_RAN_KEY = "staged_checks_ran"
-
-
-async def require_checks_before_commit(tool, args, tool_context: ToolContext):
-    """before_tool_callback: refuses commit_staged until check_staged has run.
-
-    Returning a dict short-circuits the tool call and hands that dict back to
-    the model as the result, so this blocks the write rather than merely warning.
-
-    Without this the ordering is only a prompt instruction, and prompt
-    instructions are exactly what got dropped in testing: one run committed the
-    script extraction while silently skipping the budget and constraints writes,
-    leaving the three tables inconsistent with no error anywhere.
-    """
-    if tool.name != "commit_staged":
-        return None
-    if tool_context.state.get(CHECKS_RAN_KEY):
-        return None
-    return {
-        "status": "error",
-        "message": (
-            "commit_staged blocked: call check_staged first and resolve any "
-            "must_ask diagnostics with the user before writing."
-        ),
-    }
-
-
-def _clear_staged(tool_context: ToolContext) -> None:
-    """Drops staged drafts so a later turn can't accidentally re-commit them."""
-    for key in (STAGED_SCRIPT_KEY, STAGED_BUDGET_KEY, STAGED_CONSTRAINTS_KEY, CHECKS_RAN_KEY):
-        if key in tool_context.state:
-            tool_context.state[key] = None
-
-
-def _load_staged(tool_context: ToolContext):
-    """Rehydrates the staged drafts from session state as typed models."""
-    raw_script = tool_context.state.get(STAGED_SCRIPT_KEY)
-    raw_budget = tool_context.state.get(STAGED_BUDGET_KEY)
-    raw_constraints = tool_context.state.get(STAGED_CONSTRAINTS_KEY)
-    return (
-        ScriptExtraction(**raw_script) if raw_script else None,
-        BudgetExtraction(**raw_budget) if raw_budget else None,
-        ProductionConstraints(**raw_constraints) if raw_constraints else None,
-    )
-
-
-def stage_script_extraction(extraction: ScriptExtraction, tool_context: ToolContext) -> dict:
-    """Stages a parsed script (all scenes + all choices) for writing. Does not write yet.
-
-    Call this exactly once, after extracting ALL scenes and choices from the
-    uploaded script document. Nothing reaches the database until commit_staged.
+    Call this exactly once, after you have extracted ALL nodes and edges from
+    the uploaded script PDF into the ScriptExtraction shape. Every row is
+    written as version 1 (this is the initial ingestion of the document).
 
     Args:
-        extraction: The full set of nodes and edges parsed from the script document.
+        extraction: The full set of nodes and edges parsed from the script PDF.
 
     Returns:
-        dict with counts and any diagnostics found in this document on its own.
+        dict with status, and counts of rows written to script_nodes / script_edges.
     """
-    tool_context.state[STAGED_SCRIPT_KEY] = extraction.model_dump()
-    tool_context.state[CHECKS_RAN_KEY] = None  # staging invalidates any prior check
+    if not extraction.nodes and not extraction.edges:
+        return {"status": "error", "message": "extraction has no nodes and no edges"}
 
-    diagnostics = check_script_extraction(extraction)
-    return {
-        "status": "staged",
-        "nodes_staged": len(extraction.nodes),
-        "edges_staged": len(extraction.edges),
-        "diagnostics": [d.model_dump() for d in diagnostics],
-    }
-
-
-def stage_budget_extraction(extraction: BudgetExtraction, tool_context: ToolContext) -> dict:
-    """Stages parsed budget locations for writing. Does not write yet.
-
-    Call this exactly once, after extracting ALL locations from the uploaded
-    budget document. Nothing reaches the database until commit_staged.
-
-    Args:
-        extraction: The full set of locations parsed from the budget document.
-
-    Returns:
-        dict with counts and any diagnostics found in this document on its own.
-    """
-    tool_context.state[STAGED_BUDGET_KEY] = extraction.model_dump()
-    tool_context.state[CHECKS_RAN_KEY] = None
-
-    diagnostics = check_budget_extraction(extraction)
-    return {
-        "status": "staged",
-        "locations_staged": len(extraction.locations),
-        "diagnostics": [d.model_dump() for d in diagnostics],
-    }
-
-
-def stage_production_constraints(
-    constraints: ProductionConstraints, tool_context: ToolContext
-) -> dict:
-    """Stages the production's overall budget/schedule/crew limits. Does not write yet.
-
-    Call this only when the budget document actually states an overall total
-    approved budget. If it doesn't, skip this tool — check_staged will detect
-    the missing cap and give you the question to ask, including a computed
-    placeholder figure. Never invent a budget number to force this call.
-
-    Args:
-        constraints: The production constraints parsed from the budget document.
-
-    Returns:
-        dict confirming what was staged.
-    """
-    tool_context.state[STAGED_CONSTRAINTS_KEY] = constraints.model_dump()
-    tool_context.state[CHECKS_RAN_KEY] = None
-    return {"status": "staged", "total_budget_usd": constraints.total_budget_usd}
-
-
-def check_staged(tool_context: ToolContext) -> dict:
-    """Runs every deterministic pre-write check over what you have staged.
-
-    Takes no arguments — it reads the staged drafts directly, so you never
-    re-send them. Checks for: documents that yielded nothing, a missing total
-    budget (with a computed placeholder figure), shoot-day totals that disagree
-    between the script and budget documents, and scenes pointing at locations
-    that have no cost data.
-
-    Call this after staging and before commit_staged. Each returned diagnostic
-    carries a ready-to-ask `suggested_question`.
-
-    Returns:
-        dict with a list of diagnostics; an empty list means nothing needs asking.
-    """
-    script, budget, constraints = _load_staged(tool_context)
-    if script is None and budget is None:
-        return {"status": "error", "message": "nothing staged yet — stage a document first"}
-
-    diagnostics = run_all_checks(script, budget, constraints)
-    tool_context.state[CHECKS_RAN_KEY] = True
-    return {
-        "status": "checked",
-        "must_ask_count": sum(1 for d in diagnostics if d.severity == MUST_ASK),
-        "diagnostics": [d.model_dump() for d in diagnostics],
-    }
-
-
-def _apply_corrections(corrections, script, budget, constraints):
-    """Applies the user's answers to the staged drafts. Pure; returns new state."""
-    skip_constraints = False
-
-    for c in corrections:
-        if c.action == "set_total_budget" and c.amount_usd is not None:
-            if constraints is None:
-                constraints = ProductionConstraints(total_budget_usd=c.amount_usd)
-            else:
-                constraints.total_budget_usd = c.amount_usd
-
-        elif c.action == "skip_constraints":
-            skip_constraints = True
-
-        elif c.action == "set_location_total_shoot_days" and budget is not None:
-            for loc in budget.locations:
-                if loc.location_id == c.location_id:
-                    loc.total_shoot_days = c.days
-
-        elif c.action == "merge_locations" and c.location_id and c.into_location_id:
-            # Repoint every scene, then drop the now-duplicate cost row.
-            if script is not None:
-                for n in script.nodes:
-                    if n.location_id == c.location_id:
-                        n.location_id = c.into_location_id
-            if budget is not None:
-                budget.locations = [
-                    loc for loc in budget.locations if loc.location_id != c.location_id
-                ]
-
-        elif c.action == "set_node_edges" and script is not None and c.node_id:
-            targets = c.child_node_ids or []
-            kept = [e for e in script.edges if e.parent_node_id != c.node_id]
-            existing = {e.child_node_id: e for e in script.edges if e.parent_node_id == c.node_id}
-            for child in targets:
-                kept.append(
-                    existing.get(child)
-                    or ScriptEdge(
-                        parent_node_id=c.node_id,
-                        child_node_id=child,
-                        choice_text=f"Leads to {child}",
-                    )
-                )
-            script.edges = kept
-
-    if skip_constraints:
-        constraints = None
-    return script, budget, constraints
-
-
-def commit_staged(corrections: list[Correction], tool_context: ToolContext) -> dict:
-    """Applies the user's answers and writes everything staged to ClickHouse.
-
-    This is the only tool that writes. It writes the script, budget and
-    constraints together so the tables can't end up inconsistent. Every row is
-    written as version 1 (initial ingestion of the document).
-
-    Args:
-        corrections: The user's resolutions to whatever check_staged reported.
-            Pass an empty list when nothing needed correcting.
-
-    Returns:
-        dict with per-table row counts.
-    """
-    script, budget, constraints = _load_staged(tool_context)
-    if script is None and budget is None:
-        return {"status": "error", "message": "nothing staged to commit"}
-
-    script, budget, constraints = _apply_corrections(corrections, script, budget, constraints)
-
-    written = {"nodes": 0, "edges": 0, "locations": 0, "constraints": 0}
     try:
         client = _get_clickhouse_write_client()
 
-        if script is not None and script.nodes:
-            client.insert(
-                "script_nodes",
+        if extraction.nodes:
+            node_columns = [
+                "node_id",
+                "project_id",
+                "title",
+                "location_id",
+                "narrative_text",
+                "characters_present",
+                "state_modifiers",
+                "shoot_days",
+                "num_crew_required",
+                "version",
+            ]
+            node_rows = [
                 [
-                    [
-                        n.node_id,
-                        PROJECT_ID,
-                        n.title,
-                        n.location_id,
-                        n.narrative_text,
-                        n.characters_present,
-                        n.state_modifiers,
-                        n.shoot_days,
-                        n.num_crew_required,
-                        INITIAL_VERSION,
-                    ]
-                    for n in script.nodes
-                ],
-                column_names=[
-                    "node_id",
-                    "project_id",
-                    "title",
-                    "location_id",
-                    "narrative_text",
-                    "characters_present",
-                    "state_modifiers",
-                    "shoot_days",
-                    "num_crew_required",
-                    "version",
-                ],
-            )
-            written["nodes"] = len(script.nodes)
+                    n.node_id,
+                    PROJECT_ID,
+                    n.title,
+                    n.location_id,
+                    n.narrative_text,
+                    n.characters_present,
+                    n.state_modifiers,
+                    n.shoot_days,
+                    n.num_crew_required,
+                    INITIAL_VERSION,
+                ]
+                for n in extraction.nodes
+            ]
+            client.insert("script_nodes", node_rows, column_names=node_columns)
 
-        if script is not None and script.edges:
-            client.insert(
-                "script_edges",
+        if extraction.edges:
+            edge_columns = [
+                "parent_node_id",
+                "project_id",
+                "child_node_id",
+                "choice_text",
+                "required_state",
+                "version",
+            ]
+            edge_rows = [
                 [
-                    [
-                        e.parent_node_id,
-                        PROJECT_ID,
-                        e.child_node_id,
-                        e.choice_text,
-                        e.required_state,
-                        INITIAL_VERSION,
-                    ]
-                    for e in script.edges
-                ],
-                column_names=[
-                    "parent_node_id",
-                    "project_id",
-                    "child_node_id",
-                    "choice_text",
-                    "required_state",
-                    "version",
-                ],
-            )
-            written["edges"] = len(script.edges)
-
-        if budget is not None and budget.locations:
-            client.insert(
-                "production_locations",
-                [
-                    [
-                        loc.location_id,
-                        PROJECT_ID,
-                        loc.location_name,
-                        loc.daily_rate_usd,
-                        loc.company_move_penalty_usd,
-                        1 if loc.requires_permit else 0,
-                        loc.max_cast_capacity,
-                        loc.total_shoot_days,
-                        INITIAL_VERSION,
-                    ]
-                    for loc in budget.locations
-                ],
-                column_names=[
-                    "location_id",
-                    "project_id",
-                    "location_name",
-                    "daily_rate_usd",
-                    "company_move_penalty_usd",
-                    "requires_permit",
-                    "max_cast_capacity",
-                    "total_shoot_days",
-                    "version",
-                ],
-            )
-            written["locations"] = len(budget.locations)
-
-        if constraints is not None:
-            client.insert(
-                "production_constraints",
-                [
-                    [
-                        PROJECT_ID,
-                        constraints.total_budget_usd,
-                        constraints.max_filming_days,
-                        constraints.max_total_crew,
-                        constraints.max_primary_locations,
-                        INITIAL_VERSION,
-                    ]
-                ],
-                column_names=[
-                    "project_id",
-                    "total_budget_usd",
-                    "max_filming_days",
-                    "max_total_crew",
-                    "max_primary_locations",
-                    "version",
-                ],
-            )
-            written["constraints"] = 1
+                    e.parent_node_id,
+                    PROJECT_ID,
+                    e.child_node_id,
+                    e.choice_text,
+                    e.required_state,
+                    INITIAL_VERSION,
+                ]
+                for e in extraction.edges
+            ]
+            client.insert("script_edges", edge_rows, column_names=edge_columns)
 
     except Exception as e:
-        return {"status": "error", "message": str(e), "partial_write": written}
+        return {"status": "error", "message": str(e)}
 
-    _clear_staged(tool_context)
-    return {"status": "success", "project_id": PROJECT_ID, "written": written}
+    return {
+        "status": "success",
+        "nodes_inserted": len(extraction.nodes),
+        "edges_inserted": len(extraction.edges),
+    }
+
+
+def insert_budget_extraction(extraction: BudgetExtraction, tool_context: ToolContext) -> dict:
+    """Writes a structured budget/locations extraction to ClickHouse.
+
+    Call this exactly once, after you have extracted ALL locations from the
+    uploaded budget PDF into the BudgetExtraction shape. Every row is written
+    as version 1 (this is the initial ingestion of the document).
+
+    Args:
+        extraction: The full set of locations parsed from the budget PDF.
+
+    Returns:
+        dict with status, and count of rows written to production_locations.
+    """
+    if not extraction.locations:
+        return {"status": "error", "message": "extraction has no locations"}
+
+    try:
+        client = _get_clickhouse_write_client()
+
+        columns = [
+            "location_id",
+            "project_id",
+            "location_name",
+            "daily_rate_usd",
+            "company_move_penalty_usd",
+            "requires_permit",
+            "max_cast_capacity",
+            "total_shoot_days",
+            "version",
+        ]
+        rows = [
+            [
+                loc.location_id,
+                PROJECT_ID,
+                loc.location_name,
+                loc.daily_rate_usd,
+                loc.company_move_penalty_usd,
+                1 if loc.requires_permit else 0,
+                loc.max_cast_capacity,
+                loc.total_shoot_days,
+                INITIAL_VERSION,
+            ]
+            for loc in extraction.locations
+        ]
+        client.insert("production_locations", rows, column_names=columns)
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    return {"status": "success", "locations_inserted": len(extraction.locations)}
+
+
+def insert_production_constraints(constraints: ProductionConstraints, tool_context: ToolContext) -> dict:
+    """Writes the production's overall budget/schedule/crew constraints to ClickHouse.
+
+    Call this once, only if the uploaded budget document states an overall
+    approved budget, filming-day limit, crew-size limit, or location-count
+    limit for the production. Written as version 1 (this is the initial
+    ingestion of the document).
+
+    Args:
+        constraints: The production constraints parsed from the budget PDF.
+
+    Returns:
+        dict with status, and confirmation of the row written to production_constraints.
+    """
+    try:
+        client = _get_clickhouse_write_client()
+
+        columns = [
+            "project_id",
+            "total_budget_usd",
+            "max_filming_days",
+            "max_total_crew",
+            "max_primary_locations",
+            "version",
+        ]
+        row = [
+            PROJECT_ID,
+            constraints.total_budget_usd,
+            constraints.max_filming_days,
+            constraints.max_total_crew,
+            constraints.max_primary_locations,
+            INITIAL_VERSION,
+        ]
+        client.insert("production_constraints", [row], column_names=columns)
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    return {"status": "success", "project_id": PROJECT_ID}

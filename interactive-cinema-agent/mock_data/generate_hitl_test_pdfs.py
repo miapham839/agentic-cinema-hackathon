@@ -1,41 +1,69 @@
-"""Generates mock PDFs for stress-testing parser_agent's HITL rules.
-
-STATUS: these are now the DEV fixtures — good for manual walkthroughs via
-`adk web`. They must NOT be used to measure whether an instruction change
-worked, because several of their identifiers were once pasted into
-parser_agent's instruction (see docs/DESIGN_DECISIONS.md section 14). Use the
-held-out set in mock_data/heldout_fixtures.py for measurement instead.
-
-Also note rules 1, 2 and 5 are no longer prose in the instruction at all — they
-are deterministic checks in app/checks.py and fire from code, so the traps below
-for those three now verify plumbing rather than model judgment. Rules 3 and 4
-(location identity, story-graph inference) are the only ones still decided by
-the model. See docs/DESIGN_DECISIONS.md section 12.
+"""Generates a mock script+budget pair for testing parser_agent's
+request_input rules 2 and 3 (app/agent.py, "WHEN TO ASK THE USER").
 
 Run with:
     uv run --with fpdf2 python mock_data/generate_hitl_test_pdfs.py
 
 Produces, in mock_data/:
-  - hitl_script.pdf / hitl_budget.pdf   — one script+budget pair, "The Tip,"
-    with five deliberate traps, one per rule. Upload both in the SAME
-    message to exercise the combined-ask flow end to end.
-  - hitl_degenerate.pdf                 — an unrelated one-page memo, not a
-    script at all. Upload it alone as a "script" to trigger rule 1.
+  - hitl_script.pdf   - "Cold Storage," a short branching sequence
+  - hitl_budget.pdf   - its budget/location memo
 
-This is v2 of this fixture. v1's traps for rules 3(direction 1), 4, and 5
-turned out to be resolvable by legitimate inference (sequential context,
-recognizing a normal branching-choice pattern) rather than genuine
-ambiguity — the model wasn't wrong not to ask about them. This version
-tightens each trap so there's no honest way to resolve it without asking:
-shoot-day statements are unambiguous production notes (not diegetic prose
-that could be read either way), the destination ambiguity isn't phrased as
-a "she could X, or she could Y" choice (which is legitimately just a normal
-fork, not a low-confidence case), and the location-name traps aren't
-preceded by a scene that already establishes which place is meant.
+Upload both in the SAME message. Two deliberate traps:
 
-See the module-level ASCII graph below for the full story shape, and each
-scene's inline comment for exactly which rule it's there to trip (or, for
-the two control scenes, to confirm nothing fires where nothing should).
+  Rule 2 - missing budget cap. The budget memo prices three locations but
+    never states an overall total budget. Expected computed floor (GENERAL
+    RULE's formula - no location states a total_shoot_days, so each
+    defaults to x1):
+      Fisherman's Cannery    $3,300
+      Cannery Row Storage    $3,450
+      Midnight Diner         $2,100
+      --------------------------------
+      Floor                  $8,850
+
+  Rule 3 - ambiguous location identity, both directions. v2: a first pass
+    at this pair had a hidden tiebreaker in each trap, which is why
+    Gemini 3.7 resolved both silently instead of asking. This version
+    removes both tiebreakers:
+
+    (a) the script's "the old cannery" is a plausible match for EITHER
+        "Fisherman's Cannery" or "Cannery Row Storage" in the budget. v1
+        named the second option "Bayfront Cold Storage" - the word
+        "cannery" only appeared in one candidate's name, so a smart model
+        had a free lexical tiebreaker and never needed to treat this as
+        ambiguous. Now BOTH budget names contain "Cannery" and get
+        identical waterfront/loading-door/permit descriptions differing
+        only in price - there is no textual feature left that favors one
+        over the other.
+
+    (b) the script names two locations, "The Pancake Shack" and "Midnight
+        Diner," with matching physical detail (cracked vinyl booth,
+        buzzing neon sign) that argues FOR them being the same place under
+        two names - but now each scene also gives a throwaway geographic
+        anchor that CONFLICTS ("the north side of town" vs. "two blocks
+        off the harbor"). v1 had only the matching detail and no
+        counter-evidence, so a smart model confidently merged them. Now
+        there's real signal on both sides - same physical description (a
+        continuity slip would look exactly like this) but different
+        stated geography (two genuinely different, similarly-described
+        diners would also look exactly like this) - so neither "same
+        place" nor "different places" is the safe default; only asking is.
+        The budget still lists only "Midnight Diner," never "The Pancake
+        Shack," so there's no way to silently sidestep the question by
+        just not writing a location for one of them.
+
+Rule 1 (degenerate extraction - a document with zero extractable scenes or
+priced locations) deliberately isn't covered by this pair: it requires an
+empty document, which can't coexist with the real scenes/locations rules 2
+and 3 need to test against. Test rule 1 separately with an unrelated
+one-page memo uploaded as a "script" or "budget."
+
+Neither document uses schema-shaped labels (no "Location ID:", "CHOICE:
+... leads to ...") - same house style as generate_mock_pdfs.py, so
+parser_agent has to actually reason about the prose rather than
+pattern-match a form. Both traps are genuine ambiguities, not something
+resolvable by legitimate inference - if parser_agent silently resolves one
+on its own instead of calling request_input, that's a real miss, not the
+model being appropriately confident.
 """
 
 from pathlib import Path
@@ -68,228 +96,96 @@ def body(pdf, text):
 
 
 # ==============================================================================
-# STORY GRAPH — "The Tip"
-#
-#                              the_tip (3-way choice)
-#                    /                |                    \
-#         foreman_confrontation  warehouse_stakeout    harbor_place_inquiry
-#              |  [CONTROL:            |  [shoot_days=2,       |  [RULE 3a:
-#              |   clean, no           |   explicit]           |   "the harbor
-#              |   traps]              v                       |   place" —
-#              v                  warehouse_break_in            |   matches 2
-#         foreman_ending          |  [shoot_days=1,             |   budget
-#         [CONTROL ending]        |   explicit]                 |   locations]
-#                                 v                              v
-#                            ledger_call                    (ends here)
-#                            [RULE 4: trailing
-#                             action, no explicit
-#                             choice — 2 scenes
-#                             below both plausibly
-#                             follow it]
-#                            /            \
-#              rooftop_pursuit        captain_debrief
-#              [CONTROL ending,       |  [sluglined
-#               reuses Harbor          |   INT. PRECINCT]
-#               Warehouse]             v
-#                                  precinct_epilogue
-#                                  [RULE 3b: sluglined
-#                                   INT. 14TH STREET
-#                                   STATION — suspected
-#                                   same place as
-#                                   captain_debrief's
-#                                   "PRECINCT," but
-#                                   budget only lists
-#                                   "Precinct House"]
-#
-# RULE 5 (shoot-day conflict) lives at the Harbor Warehouse location:
-# warehouse_stakeout (2) + warehouse_break_in (1) = 3 script days, vs.
-# hitl_budget.pdf's stated total_shoot_days: 2 for Harbor Warehouse.
-#
-# RULE 2 (missing budget cap) is document-wide: hitl_budget.pdf states a
-# crew cap, a filming-day cap, and a hero-location cap, but never an overall
-# dollar figure.
-#
-# RULE 1 (degenerate extraction) is untouched from v1 — hitl_degenerate.pdf
-# still has zero scenes in it.
+# SCRIPT PDF — "Cold Storage" (rule 3, both directions — see module docstring)
 # ==============================================================================
 
-pdf = new_pdf("THE TIP\nDraft 2 - branching sequence")
+pdf = new_pdf("COLD STORAGE\nDraft 1 - branching sequence")
 
 body(
     pdf,
-    "INT. PORT AUTHORITY OFFICE - NIGHT\n\n"
-    "VIC meets DANA in the stairwell they always use when Dana has "
-    "something she shouldn't. Dana presses a folded shipping manifest into "
-    "Vic's hand before either of them says a word.\n\n"
-    "DANA\n"
-    "Whatever you do with this, it didn't come from me.\n\n"
-    "VIC\n"
-    "It never does.\n\n"
-    "Vic has three ways she could play this: go confront the shipping "
-    "foreman directly with what's on the manifest, stake out the warehouse "
-    "first and see who actually shows up, or head straight for the harbor "
-    "place to ask around before she tips her hand anywhere else.",
+    "INT. THE PANCAKE SHACK - NIGHT\n\n"
+    "NORA slides into the booth across from ELI, out on the north side of "
+    "town past the old gas station - the same cracked vinyl seat, the "
+    "same buzzing neon sign flickering red through the window behind "
+    "him, same as always.\n\n"
+    "ELI\n"
+    "You said this was the last favor.\n\n"
+    "NORA\n"
+    "It is. After tonight, we're square.\n\n"
+    "Eli doesn't answer right away. Outside, gulls are already circling "
+    "the water a few blocks off - the old cannery, probably, picking "
+    "through whatever the tide left behind.\n\n"
+    "Does Nora go to the old cannery to finish this herself, or does she "
+    "send Eli instead and stay behind? Going herself leads into "
+    "Cannery Run. Sending Eli leads into Waiting It Out.",
 )
 
-heading(pdf, "FOREMAN CONFRONTATION")
+heading(pdf, "CANNERY RUN")
 body(
     pdf,
-    "INT. SHIPPING OFFICE - DAY\n\n"
-    "Vic drops the manifest on Reyes's desk without any preamble. He "
-    "doesn't even look surprised, which tells her everything the paperwork "
-    "didn't.\n\n"
-    "REYES\n"
-    "You're going to want to sit down for this part.\n\n"
-    "By the time he's done talking, Reyes has told her more than he "
-    "meant to, and they both know it.",
+    "EXT. WATERFRONT - LATER\n\n"
+    "Nora picks her way along the old cannery's loading doors, half of "
+    "them rusted shut, gulls scattering off the pilings as she passes. "
+    "Whatever's inside, she's not walking away from it clean.\n\n"
+    "The sequence ends here for tonight - what's behind those doors is "
+    "next episode's problem.",
 )
 
-heading(pdf, "FOREMAN ENDING")
+heading(pdf, "WAITING IT OUT")
 body(
     pdf,
-    "INT. SHIPPING OFFICE - CONTINUOUS\n\n"
-    "Vic folds the manifest back up and pockets it. Whatever happens with "
-    "Reyes from here isn't part of tonight - the sequence ends with her "
-    "walking out the same door she came in.",
-)
-
-heading(pdf, "WAREHOUSE STAKEOUT")
-body(
-    pdf,
-    "EXT. HARBOR WAREHOUSE - NIGHT\n\n"
-    "Vic settles into the car across the lot, engine off, watching the "
-    "loading doors for anything that doesn't belong. Full two-day shoot on "
-    "this one - we need the exterior stakeout covered across both a rainy "
-    "night and a clear one before we can cut it together.\n\n"
-    "Nothing moves for a long time. Then, close to dawn on the second "
-    "night, a truck she doesn't recognize backs up to the loading doors.",
-)
-
-heading(pdf, "WAREHOUSE BREAK-IN")
-body(
-    pdf,
-    "INT. HARBOR WAREHOUSE - LATER THAT NIGHT\n\n"
-    "Vic slips through the side door once the truck pulls out again. One-"
-    "day shoot for this one - one night, one location, we get the ledger "
-    "reveal in a single take or we don't get it at all.\n\n"
-    "The ledger is exactly where the manifest said it would be.",
-)
-
-heading(pdf, "LEDGER CALL")
-body(
-    pdf,
-    "INT. HARBOR WAREHOUSE - CONTINUOUS\n\n"
-    "The ledger's still open in her hands when she finally reaches for the "
-    "phone, thumb hovering over Hale's number without pressing down on it "
-    "yet.",
-)
-
-heading(pdf, "ROOFTOP PURSUIT")
-body(
-    pdf,
-    "EXT. HARBOR WAREHOUSE ROOF - CONTINUOUS\n\n"
-    "The call barely rings twice before headlights swing across the lot "
-    "below, and Vic is already moving, ledger tucked under one arm, taking "
-    "the fire escape two rungs at a time. Whatever was on that truck, "
-    "it isn't done with her yet.",
-)
-
-heading(pdf, "CAPTAIN DEBRIEF")
-body(
-    pdf,
-    "INT. PRECINCT - LATER\n\n"
-    "Vic sets the ledger down on Captain Hale's desk without a word, "
-    "still catching her breath from the drive over.\n\n"
-    "HALE\n"
-    "Tell me this isn't what I think it is.\n\n"
-    "Vic doesn't answer, which is answer enough.",
-)
-
-heading(pdf, "PRECINCT EPILOGUE")
-body(
-    pdf,
-    "INT. 14TH STREET STATION - MOMENTS LATER\n\n"
-    "Hale pages back through the ledger at his desk, same tired "
-    "fluorescent lighting overhead as always, while Vic waits by the door "
-    "for whatever comes next. Whatever that turns out to be isn't part of "
-    "tonight - the sequence ends here.",
-)
-
-heading(pdf, "HARBOR PLACE INQUIRY")
-body(
-    pdf,
-    "Vic skips the warehouse and the shipping office both and heads "
-    "straight for the harbor place to ask around before she shows her "
-    "hand anywhere else. Nobody there is in a hurry to talk, and by the "
-    "time anyone does, the trail's already gone cold. The sequence ends "
-    "with her walking back to the car with nothing to show for it.",
+    "INT. MIDNIGHT DINER - LATER\n\n"
+    "Nora's back in a booth an hour later, two blocks off the harbor now "
+    "instead of the north side of town - same cracked vinyl under her, "
+    "same neon sign still buzzing outside the window, waiting on a text "
+    "from Eli that hasn't come yet.\n\n"
+    "The sequence ends here for tonight - whatever Eli finds out there "
+    "is next episode's problem too.",
 )
 
 pdf.output(str(OUT_DIR / "hitl_script.pdf"))
 
 
 # ==============================================================================
-# BUDGET / LOCATIONS PDF — deliberately missing an overall dollar cap, and
-# with Harbor Warehouse's total_shoot_days set to conflict with the script.
+# BUDGET / LOCATIONS PDF — rule 2 (no total budget stated) and rule 3
+# (Fisherman's Cannery / Cannery Row Storage both equally plausibly match
+# "the old cannery" - both names contain "Cannery," both get the same
+# waterfront/loading-door/permit description; only "Midnight Diner" is
+# listed, not "The Pancake Shack")
 # ==============================================================================
 
-pdf = new_pdf("THE TIP\nBudget & location notes")
+pdf = new_pdf("COLD STORAGE\nBudget & location notes")
 
 body(
     pdf,
-    "Location rundown for The Tip sequence. Producer wants a hard line "
-    "at eight crew on set, no more than five filming days across the "
-    "whole shoot, and ideally no more than three hero locations if we can "
-    "help it. Numbers below are what each location actually costs.",
+    "Location notes for the Cold Storage sequence. Keeping both old "
+    "cannery buildings on hold for now - we'll lock which one we're "
+    "actually using once we see the light test.",
 )
 
-heading(pdf, "Shipping Office")
+heading(pdf, "Fisherman's Cannery")
 body(
     pdf,
-    "$2,600 for a full day, plus a $500 move-in fee. Seats about 15 "
-    "comfortably, and yes, we need the standard permit for it.",
+    "$3,300 a day, $600 move-in. Old fish-processing building right on "
+    "the water, loading doors facing the pier, holds about 20. Permit's "
+    "required.",
 )
 
-heading(pdf, "Harbor Warehouse")
+heading(pdf, "Cannery Row Storage")
 body(
     pdf,
-    "$4,100 a day, with a $900 move-in charge. We're budgeting two total "
-    "shoot days there. Capacity's around 25, and a permit's required.",
+    "$3,450 a day, $650 move-in. Another old fish-processing building a "
+    "few piers down, loading doors facing the water too, holds about 18. "
+    "Permit's required here as well.",
 )
 
-heading(pdf, "Harbor Fish Market")
+heading(pdf, "Midnight Diner")
 body(
     pdf,
-    "$3,400 a day, plus an $800 move-in fee. Can hold up to 20, and it's "
-    "a working market so a permit's required there too.",
-)
-
-heading(pdf, "Precinct House")
-body(
-    pdf,
-    "Our cheapest location by far - $1,800 a day, $300 move-in. Tops out "
-    "around 18 people, and a permit's required to film there.",
+    "$2,100 a day, $400 move-in. Small booth seating, tops out around "
+    "12. No permit needed - it's privately owned.",
 )
 
 pdf.output(str(OUT_DIR / "hitl_budget.pdf"))
 
-
-# ==============================================================================
-# DEGENERATE PDF — not a script at all (tests rule 1). Unchanged from v1.
-# ==============================================================================
-
-pdf = new_pdf("CREW CATERING MEMO")
-
-body(
-    pdf,
-    "Reminder that craft services will switch to the north-lot tent "
-    "starting Monday. Please route any dietary requests through the 2nd "
-    "AD by end of week. Coffee will still be available at both the main "
-    "tent and video village.\n\n"
-    "No script pages attached - this is just the standing catering note "
-    "for the crew list.",
-)
-
-pdf.output(str(OUT_DIR / "hitl_degenerate.pdf"))
-
-print("Wrote hitl_script.pdf, hitl_budget.pdf, and hitl_degenerate.pdf to", OUT_DIR)
+print("Wrote hitl_script.pdf and hitl_budget.pdf to", OUT_DIR)

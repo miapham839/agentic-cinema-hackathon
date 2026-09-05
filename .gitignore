@@ -1,0 +1,6 @@
+.agents/
+.claude/settings.local.json
+.claude/skills/
+.adk-reference/
+.DS_Store
+interactive-cinema-agent/docs/
