@@ -24,6 +24,13 @@ COPY ./app ./app
 
 RUN uv sync --frozen
 
+# Bake in the ClickHouse MCP server. Without this a cold container
+# downloads it from PyPI on the first agent tool call, inside a 30s
+# timeout, which fails intermittently.
+RUN uv tool install --python 3.12 mcp-clickhouse
+ENV PATH="/root/.local/bin:${PATH}" \
+    MCP_CLICKHOUSE_CMD="/root/.local/bin/mcp-clickhouse"
+
 ARG AGENT_VERSION=0.0.0
 ENV AGENT_VERSION=${AGENT_VERSION}
 

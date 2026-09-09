@@ -25,6 +25,7 @@ Read/write split (see docs/DESIGN_DECISIONS.md for the full rationale):
 """
 
 import json
+import os
 import uuid
 
 from google.adk.tools import ToolContext
@@ -58,11 +59,20 @@ from app.schemas import (
 # CLICKHOUSE_ALLOW_WRITE_ACCESS is intentionally NOT set, so this toolset can only
 # call list_databases / list_tables / run_query(SELECT ...).
 
+_MCP_CLICKHOUSE_CMD = os.environ.get("MCP_CLICKHOUSE_CMD")
+
 clickhouse_tools = McpToolset(
     connection_params=StdioConnectionParams(
         server_params=StdioServerParameters(
-            command="uv",
-            args=["run", "--with", "mcp-clickhouse", "--python", "3.12", "mcp-clickhouse"],
+            # In the container the Dockerfile pre-installs mcp-clickhouse and
+            # points MCP_CLICKHOUSE_CMD at the binary, so startup is a plain
+            # exec. Locally the var is unset and this falls back to `uv run`,
+            # which resolves and downloads the package on first use — fine on
+            # a warm cache, too slow for a cold container's 30s timeout.
+            command=_MCP_CLICKHOUSE_CMD or "uv",
+            args=[]
+            if _MCP_CLICKHOUSE_CMD
+            else ["run", "--with", "mcp-clickhouse", "--python", "3.12", "mcp-clickhouse"],
             env={
                 "CLICKHOUSE_HOST": CLICKHOUSE_HOST,
                 "CLICKHOUSE_PORT": CLICKHOUSE_PORT,
