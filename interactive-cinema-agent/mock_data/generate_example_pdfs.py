@@ -18,9 +18,10 @@ WHAT EACH SET IS FOR
 
   The Diner Standoff  No questions at all, so it runs start to finish
                       without stopping. Its findings are a choice pointing
-                      at a scene that was never written, and three caps
-                      that are not money: crew size, filming days, and
-                      hero locations. Those three checks exist in
+                      at a scene that was never written, a choice gated on
+                      something that never happened on its own branch, and
+                      three caps that are not money: crew size, filming
+                      days, and hero locations. Those three checks exist in
                       budget_agent (see "If max_primary_locations is set"
                       onwards in its instruction) but never fire on Last
                       Train, whose script states no per-scene days or crew.
@@ -31,6 +32,19 @@ WHAT EACH SET IS FOR
                       ASK THE USER, rule 2). Everything downstream is then
                       measured against the number the user chose. Also the
                       only set with a three-way fork.
+
+Neither set has a dead end, on purpose. Last Train already has one (and an
+unreachable scene besides), so a dead end in all three would mean seeing
+the same finding three times. Both of these carry a continuity break
+instead, which is the auditor's fourth category and the one nothing else
+exercises: a choice whose required_state names a key no upstream node on
+that path ever sets (app/agent.py, the auditor's step 2).
+
+That check only fires if the parser records the gate, so both scripts
+write the condition the way a branching manuscript actually writes one
+("Open only if the shot was fired") on its own line under the fork, and
+app/agent.py now has a required_state bullet telling the parser to record
+it and to reuse the state_modifiers key vocabulary so the two line up.
 
 Neither set repeats Last Train's ambiguous-location question. Every
 location is named the same way in both of its documents, so there is
@@ -93,15 +107,28 @@ def body(pdf, text):
 #     |                                          exists anywhere in the
 #     |                                          document. This is the
 #     |                                          orphaned_choice finding.
-#     '- an_uneasy_truce     Route 66 Diner   DEAD END. No outgoing fork and
-#                                             no ending language, so it
-#                                             reads as unfinished rather
-#                                             than deliberate.
+#     '- an_uneasy_truce     Route 66 Diner   Leads on to the_old_warehouse,
+#                                             but that choice is written
+#                                             "Open only if the shot was
+#                                             fired" and this is the branch
+#                                             where the gun came DOWN. The
+#                                             shot is fired in
+#                                             blood_on_the_floor, which is
+#                                             the other branch entirely, so
+#                                             nothing on this path ever sets
+#                                             it. This is the
+#                                             continuity_break finding, and
+#                                             it reads like a gate copied
+#                                             across from the other fork.
 #
 # No parser question fires here, on purpose. All three locations are named
 # identically in both documents, the budget states a dollar cap, and every
 # scene is unmistakably a scene. It runs start to finish without stopping,
 # which is the contrast with Last Train.
+#
+# Note the_old_warehouse now has two parents, one from each branch. That is
+# deliberate and is not itself a finding: converging branches are normal in
+# a CYOA manuscript. Only the gate on the second edge is wrong.
 #
 # THE MONEY. Same model as everywhere else: a production shoots every
 # branch, so it pays for each location a scene sits at, booked once, at
@@ -135,7 +162,7 @@ def body(pdf, text):
 #
 #   Branch A  standoff -> blood -> warehouse
 #             3 distinct locations  vs 2 hero locations   OVER
-#             1 + 2 + 1 = 4 days    vs 2 filming days     OVER
+#             1 + 2 + 1 = 4 days    vs 3 filming days     OVER
 #             max(8, 18, 9) = 18    vs 10 crew            OVER
 #
 #   Branch B  standoff -> truce
@@ -176,13 +203,16 @@ heading(pdf, "BLOOD ON THE FLOOR")
 body(
     pdf,
     "EXT. HARBOR DOCKS - NIGHT\n\n"
-    "The shot cracks through the diner before anyone can stop it. Sam is "
+    "The shot is fired before anyone in the room can stop it, and it "
+    "cracks through the diner like the building flinched. Sam is "
     "out the back within seconds, Jamie's weight over one shoulder, the "
     "gun still warm in his other hand, and he doesn't slow down until the "
     "docks swallow him and the sirens are just noise behind him.\n\n"
-    "He puts his back against a stack of shipping containers and finally "
-    "lets her down onto the wet concrete. Whatever was between them "
-    "before, it isn't there anymore.\n\n"
+    "He wades in to his knees and lets the revolver go under, then puts his "
+    "back against a stack of shipping containers and finally lets her down "
+    "onto the wet concrete. The tide takes the gun somewhere nobody is "
+    "going to find it. Whatever was between them before, it isn't there "
+    "anymore.\n\n"
     "[PRODUCTION NOTE: two shoot days, this one is the whole reason the "
     "schedule is tight. Night exterior on open water, so we need the full "
     "unit out there, eighteen bodies including the marine safety officer. "
@@ -205,7 +235,9 @@ body(
     "them has shifted, and it isn't going back to what it was.\n\n"
     "[PRODUCTION NOTE: one shoot day, same eight crew as the opener. We "
     "are already standing in the diner, so this is the cheap half of the "
-    "sequence.]",
+    "sequence.]\n\n"
+    "They leave together a few minutes later, which puts us in The Old "
+    "Warehouse. Open only if the shot was fired.",
 )
 
 heading(pdf, "THE OLD WAREHOUSE")
@@ -247,7 +279,7 @@ body(
     "Quick rundown for the diner sequence (we've been tracking it "
     "internally under the code diner-standoff-01). Studio's given us a "
     "hard ceiling of twelve thousand dollars for this whole stretch, wants "
-    "it wrapped inside two shooting days, and is capping the crew at ten "
+    "it wrapped inside three shooting days, and is capping the crew at ten "
     "bodies on set. They've also asked us to keep it to two hero locations "
     "if we can, since every extra company move eats into both the schedule "
     "and the number above.\n\n"
@@ -300,9 +332,17 @@ pdf.output(str(OUT_DIR / "diner-standoff-budget.pdf"))
 #     |- foreman_confrontation  Shipping Office
 #     |    '- foreman_ending    Shipping Office     a real ending
 #     |- warehouse_stakeout     Harbor Warehouse
-#     |    '- the_ledger        Harbor Warehouse    DEAD END. She reaches
-#     |                                             for the phone and the
-#     |                                             draft stops there.
+#     |    '- the_ledger        Harbor Warehouse    Leads on to
+#     |                                             foreman_confrontation,
+#     |                                             gated "Open only if
+#     |                                             Reyes has already
+#     |                                             talked". Reyes talks in
+#     |                                             foreman_confrontation
+#     |                                             itself, on a different
+#     |                                             branch, so nothing on
+#     |                                             this path sets it. This
+#     |                                             is the continuity_break
+#     |                                             finding.
 #     '- fish_market_inquiry    Harbor Fish Market  a real ending, the
 #                                                   trail goes cold
 #
@@ -339,10 +379,21 @@ pdf.output(str(OUT_DIR / "diner-standoff-budget.pdf"))
 #
 #   14,900 - 4,200 = $10,700, which is $1,600 under the offered floor.
 #
+# THE BRANCH THE GATE CREATES. handoff -> stakeout -> ledger -> foreman
+# confrontation -> foreman ending touches 3 distinct locations against a cap
+# of 3, and sums 1 + 2 + 1 + 1 = 5 days against a cap of 5. Both land exactly
+# on the limit rather than over it, so the crew cap below is the only
+# non-dollar finding and this set stays light.
+#
 # THE CREW CAP. warehouse_stakeout states a unit of twelve against the
-# memo's cap of eight, so the stakeout branch is flagged and the other two
-# are not. Crew is the largest single scene's headcount on a branch, not a
+# memo's cap of eight, so every branch through the stakeout is flagged and
+# the other two are not. Crew is the largest single scene's headcount on a branch, not a
 # sum, which is why one scene is enough to fail it.
+#
+# NO DEAD END HERE. the_ledger used to be one. It now continues, and what
+# is wrong with it is the gate on the way out rather than the absence of
+# one. See the module docstring for why both alternate sets moved off dead
+# ends.
 #
 # ONE DELIBERATE GAP. foreman_ending states no shoot days, while every
 # other scene does. budget_agent is told to still add up what it has and
@@ -381,8 +432,8 @@ body(
     "didn't.\n\n"
     "REYES\n"
     "You're going to want to sit down for this part.\n\n"
-    "By the time he's done talking, Reyes has told her more than he meant "
-    "to, and they both know it.\n\n"
+    "By the time he's done, Reyes has talked, and he has told her more than "
+    "he meant to. They both know it.\n\n"
     "[PRODUCTION NOTE: one shoot day, six crew.]\n\n"
     "However that lands, it lands here: this one runs straight on into "
     "Foreman Ending.",
@@ -420,9 +471,12 @@ body(
     "Vic slips through the side door and finds the ledger exactly where "
     "the manifest said it would be. She reads two pages standing up, and "
     "whatever is on the second one stops her.\n\n"
-    "It's still open in her hands when she reaches for the phone, thumb "
-    "hovering over Captain Hale's number without pressing down on it yet.\n\n"
-    "[PRODUCTION NOTE: one shoot day, seven crew.]",
+    "It's still open in her hands when she reaches for the phone. She doesn't "
+    "call Hale. She calls the number written inside the back cover, and the "
+    "voice that answers sends her straight back across the water.\n\n"
+    "[PRODUCTION NOTE: one shoot day, seven crew.]\n\n"
+    "That takes us into Foreman Confrontation. Open only if Reyes has "
+    "already talked.",
 )
 
 heading(pdf, "FISH MARKET INQUIRY")

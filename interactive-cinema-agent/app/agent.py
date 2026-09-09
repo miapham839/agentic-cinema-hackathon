@@ -143,6 +143,13 @@ SCRIPT documents:
     "damaged"}). Empty dict only when nothing changes. This is inference
     from what's depicted — never invent scenes, choices, or characters
     that aren't in the text.
+  - required_state: when a choice is written as available only under some
+    condition ("open only if he actually fired"), record that condition on
+    the EDGE, reusing the same key vocabulary you used for state_modifiers
+    so the two line up. Empty dict when the choice is always available,
+    which is most of them. Never add a condition the text doesn't state:
+    an ungated choice recorded as gated invents a continuity break that
+    isn't there, and graph_auditor_agent has no way to tell the difference.
   - If a choice leads to a scene that's referenced but never actually
     written, record the edge as implied anyway — don't drop it or invent
     the missing scene. graph_auditor_agent flags that downstream.
@@ -442,11 +449,21 @@ Your task, every time you run:
      graph traversal here) and identify:
      - Orphaned / broken choices: an edge whose child_node_id does not match
        any existing node_id (a choice that leads nowhere).
-     - Dead ends: a node with no outgoing edges, where nothing in the scene's
-       narrative_text or state_modifiers suggests it's an intentional ending.
+     - Dead ends: a node with NO outgoing edges at all, where nothing in the
+       scene's narrative_text or state_modifiers suggests it's an intentional
+       ending. A node that has an outgoing edge is not a dead end, even when
+       that edge can never actually be taken. An unsatisfiable choice is a
+       continuity break, and filing it as a dead end hides the real cause and
+       points the fix at the wrong place: the node looks like it needs a new
+       ending, when what is wrong is the condition on the way out.
      - Continuity breaks: a choice whose required_state references a
        state_modifiers key that no upstream node in that path actually sets,
-       or contradictory state requirements.
+       or contradictory state requirements. Check this for EVERY edge whose
+       required_state is non-empty, one edge at a time: walk back from its
+       parent node to the start of the story and look for a node that sets
+       each required key to the required value. This is the easiest issue to
+       miss, because such an edge looks perfectly fine on its own and only
+       the path leading to it shows the problem.
      - Unreachable nodes: a node that is never referenced as a child_node_id
        by any edge and isn't the story's obvious starting node.
   3. For each issue found, work out: which node_id/edge is affected, what's
