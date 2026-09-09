@@ -336,9 +336,9 @@ def apply_graph_correction(correction: GraphCorrection) -> dict:
     instruction only covers 2 modes (FULL AUDIT, CONSULTATION), neither of
     which tells the model when to call this — an ungated write tool with no
     instruction scoping its use is a real risk, not just unused surface
-    area. Re-add it there only alongside real instruction text (e.g. a
-    future Step 10 ROLLBACK mode) that says exactly when the model should
-    reach for it.
+    area. The agent-facing path to this function is rollback_scene below,
+    which does carry that instruction text (graph_auditor_agent's ROLLBACK
+    mode) and gates the write behind a human confirmation.
 
     Writes ONLY to script_nodes_log/script_edges_log, one row per node/edge,
     each independently versioned (current_max_version(key) + 1, or 1 for a

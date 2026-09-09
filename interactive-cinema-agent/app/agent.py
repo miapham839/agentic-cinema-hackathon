@@ -24,9 +24,12 @@ user actually asked for (full pipeline vs. a targeted single-agent request):
     root_agent (supervisor, LLM-driven transfer; decides what runs next)
     ├── parser_agent          parses uploaded PDFs, writes structured data (v1)
     │                         to ClickHouse, then transfers back to root_agent
-    ├── graph_auditor_agent   reads the story graph (read-only), flags logic
-    │                         issues as persisted suggestions, then
-    │                         transfers back to root_agent
+    ├── graph_auditor_agent   reads the story graph, flags logic issues as
+    │                         persisted suggestions, and owns scene version
+    │                         history: it can list a scene's versions and
+    │                         roll one back, the only agent-held write, and
+    │                         only after the user confirms it. Then transfers
+    │                         back to root_agent
     └── budget_agent          reads costs, flags overruns, and proposes
                                plot-appropriate savings — consulting
                                graph_auditor_agent directly (as a tool, not a
@@ -34,6 +37,10 @@ user actually asked for (full pipeline vs. a targeted single-agent request):
                                that a suggestion is plot-consistent before
                                finalizing it, then transfers back to
                                root_agent like every other specialist
+
+Approving a suggestion is deliberately NOT an agent turn: the option's fix
+was already decided when it was recorded, so app_utils/suggestions_api.py
+replays it with a direct function call, no model in the write path.
 
 See docs/DESIGN_DECISIONS.md section 1 for why this replaced a SequentialAgent,
 section 10 for how the budget<->auditor consultation loop works, and section

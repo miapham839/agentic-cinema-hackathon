@@ -31,6 +31,6 @@ from dotenv import load_dotenv
 # does, makes it correct regardless of entrypoint.
 load_dotenv()
 
-from .agent import app
+from .agent import app  # noqa: E402  (deliberate; see the comment above)
 
 __all__ = ["app"]

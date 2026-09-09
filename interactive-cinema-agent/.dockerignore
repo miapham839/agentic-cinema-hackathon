@@ -1,0 +1,25 @@
+# The Dockerfile copies only pyproject.toml, README.md, uv.lock and app/,
+# but everything here is still uploaded as build context without this file.
+# .venv alone is ~300MB, and .env holds live ClickHouse credentials.
+.venv
+.env
+.env.example
+.git
+.gitignore
+.claude
+
+# Rebuilt inside the image by `uv sync`
+**/__pycache__/
+**/*.pyc
+.pytest_cache
+.ruff_cache
+
+# Local-only; app/.adk is an `adk web` session store that would otherwise
+# be baked into the image by `COPY ./app ./app`
+**/.adk/
+**/.DS_Store
+
+# Not needed at runtime
+docs/
+mock_data/
+tests/

@@ -20,6 +20,10 @@
 # at the bottom of this file is what actually gets run — see the Dockerfile
 # and the `uvicorn app.fast_api_app:app` command mentioned in chat.
 
+# ruff: noqa: E402
+# Imports below load_dotenv() are intentionally not at the top of the file:
+# see the load_dotenv() comment for why the order is load-bearing.
+
 import contextlib
 import os
 from collections.abc import AsyncIterator

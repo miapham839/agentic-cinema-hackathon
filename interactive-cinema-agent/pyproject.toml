@@ -92,6 +92,6 @@ pythonpath = "."
 asyncio_default_fixture_loop_scope = "session"
 
 [tool.hatch.build.targets.wheel]
-packages = ["app","frontend"]
+packages = ["app"]
 
 
