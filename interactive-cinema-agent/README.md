@@ -1,5 +1,12 @@
 # BranchArchitect — Agent Backend
 
+> **This is the backend only.** The user interface lives in a separate
+> repository:
+> **[agentic-cinema-hackathon-ui](https://github.com/miapham839/agentic-cinema-hackathon-ui)**.
+> Read that repo for anything to do with the story graph view, the budget
+> panels, the chat, or the suggestion cards. Nothing in this repo renders a
+> pixel; it serves JSON and a server-sent event stream.
+
 The multi-agent backend for BranchArchitect. It ingests a screenplay and a
 production budget, builds a versioned story graph in ClickHouse, audits that
 graph for logic problems, prices out the shoot, and serves all of it to the
@@ -7,8 +14,6 @@ frontend over HTTP.
 
 Built on [Google ADK](https://adk.dev). Four agents: a supervisor that routes,
 and three specialists that parse, audit and cost.
-
-Frontend repo: [agentic-cinema-hackathon-ui](https://github.com/miapham839/agentic-cinema-hackathon-ui)
 
 ---
 
