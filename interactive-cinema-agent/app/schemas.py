@@ -66,6 +66,12 @@ class ScriptNode(BaseModel):
         "states or clearly implies one. Leave unset (do not guess or estimate) if the "
         "document doesn't say.",
     )
+    is_deleted: bool = Field(
+        default=False,
+        description="Soft-delete flag. Always False for a fresh document ingestion — "
+        "never set this to True yourself; it's only ever set when a correction is "
+        "specifically removing this node.",
+    )
 
 
 class ScriptEdge(BaseModel):
@@ -79,6 +85,12 @@ class ScriptEdge(BaseModel):
         default_factory=dict,
         description="Story-state conditions required for this choice to be available "
         "(empty dict if the choice is always available).",
+    )
+    is_deleted: bool = Field(
+        default=False,
+        description="Soft-delete flag. Always False for a fresh document ingestion — "
+        "never set this to True yourself; it's only ever set when a correction is "
+        "specifically removing this edge.",
     )
 
 
@@ -142,4 +154,81 @@ class ProductionConstraints(BaseModel):
         default=None,
         description="Maximum number of distinct primary shooting locations approved, "
         "ONLY if the document states one. Leave unset if it doesn't — do not invent a number.",
+    )
+
+
+class GraphCorrection(BaseModel):
+    """A version-incrementing write to the story graph: one or more corrected
+    nodes and/or edges, applied together by `apply_graph_correction` (see
+    app/tools.py). A single-scene fix is `nodes=[one_node]`; a multi-part fix
+    (e.g. merging two scenes) is `nodes=[node_a, node_b], edges=[...]` — one
+    shape covers both, matching how `insert_script_extraction` already treats
+    one edge and many edges identically."""
+
+    suggestion_id: Optional[str] = Field(
+        default=None,
+        description="The suggestion this correction fulfills, if any. Set when executing "
+        "an approved suggestion or a rollback; left unset for a direct, unprompted correction.",
+    )
+    nodes: list[ScriptNode] = Field(
+        default_factory=list, description="Corrected/new nodes to write, each as a full ScriptNode."
+    )
+    edges: list[ScriptEdge] = Field(
+        default_factory=list, description="Corrected/new edges to write, each as a full ScriptEdge."
+    )
+
+
+class SuggestionOption(BaseModel):
+    """One of up to 3 concrete fix choices attached to a Suggestion. Carries
+    the full GraphCorrection needed to execute it, so approving it doesn't
+    need to re-derive the fix."""
+
+    option_id: str = Field(description="Short stable identifier for this option within its suggestion, e.g. 'a'.")
+    label: str = Field(description="Short label for a UI button, e.g. 'Merge into scene_3a'.")
+    description: str = Field(description="One or two sentences explaining what this option does.")
+    correction: GraphCorrection = Field(
+        description="Exactly what apply_graph_correction should write if this option is chosen."
+    )
+    expected_versions: dict[str, int] = Field(
+        default_factory=dict,
+        description="INTERNAL — leave unset; record_suggestion computes this automatically "
+        "from `correction` (never trust a model-supplied value here). Snapshot of the "
+        "version each referenced node_id/edge_ref was at when this option was created — "
+        "checked at approval time to detect whether anything changed underneath it since.",
+    )
+    stale: bool = Field(
+        default=False,
+        description="INTERNAL — leave unset (defaults to False); only ever set by cascade "
+        "marking after another suggestion's correction lands, never by the proposing agent. "
+        "A UI hint that this option may need re-review, not itself a safety gate.",
+    )
+
+
+class Suggestion(BaseModel):
+    """A persisted, actionable finding from graph_auditor_agent or
+    budget_agent. Written via `record_suggestion` (see app/tools.py) instead
+    of only being stated in chat, so it can be listed and responded to later
+    (see the suggestions REST API in app/app_utils/suggestions_api.py)."""
+
+    category: str = Field(
+        description="One of: dead_end, orphaned_choice, continuity_break, unreachable_node, "
+        "budget_overrun, savings_suggestion, edit_request, rollback_request."
+    )
+    summary: str = Field(description="One-sentence summary of the finding, shown as the suggestion's title.")
+    detail: str = Field(description="Fuller explanation of the finding, shown when expanded.")
+    affected_node_ids: list[str] = Field(
+        default_factory=list,
+        description="INTERNAL — leave unset; record_suggestion recomputes this automatically as "
+        "the union of node_ids referenced across every option's correction, so it can never "
+        "drift from what the options actually contain.",
+    )
+    affected_edge_refs: list[str] = Field(
+        default_factory=list,
+        description="INTERNAL — leave unset; record_suggestion recomputes this automatically as "
+        "the union of 'parent_node_id->child_node_id' refs across every option's correction.",
+    )
+    options: list[SuggestionOption] = Field(
+        min_length=1,
+        max_length=3,
+        description="1 to 3 concrete ways to resolve this finding.",
     )
