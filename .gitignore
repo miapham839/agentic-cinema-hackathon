@@ -1,6 +1,8 @@
 .agents/
-.claude/settings.local.json
-.claude/skills/
+.claude/
+**/.claude/
+CLAUDE.md
+**/CLAUDE.md
 .adk-reference/
 .DS_Store
 interactive-cinema-agent/docs/
