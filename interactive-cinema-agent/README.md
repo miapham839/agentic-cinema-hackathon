@@ -103,9 +103,6 @@ and a shoot that comes in 58% over its cap.
 uv run --with fpdf2 python mock_data/generate_demo_pdfs.py
 ```
 
-The same two PDFs are committed to the frontend's `public/examples/`, so
-regenerating them here means copying them over there too.
-
 ---
 
 ## Layout
@@ -128,9 +125,3 @@ app/
     ├── clickhouse_client.py Shared write connection.
     └── a2a.py               Agent-to-Agent protocol routes.
 ```
-
-**One thing worth knowing before you scale it.** Sessions, the SSE subscriber
-list, and the A2A task store are all in-process. The app is correct on a
-single instance and silently wrong on more than one: a graph update written by
-one instance never reaches a browser subscribed to another. Run one instance,
-or move those three to a shared backing store first.
